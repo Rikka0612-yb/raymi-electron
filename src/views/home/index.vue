@@ -44,6 +44,7 @@ import { NButton } from 'naive-ui'
           color="#8b5cf6" 
           size="large"
           class="px-8 font-light tracking-widest hover:bg-purple-500/10 transition-all duration-300"
+          @click="$router.push('/chat')"
         >
           探索旅程
         </n-button>
