@@ -223,4 +223,4 @@ class ChatApiClient {
   }
 }
 
-export const chatApi = new ChatApiClient('http://localhost:8612'); // Backend is on 8612
+export const chatApi = new ChatApiClient(''); // Backend is proxied via Vite on same origin

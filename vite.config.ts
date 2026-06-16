@@ -14,6 +14,14 @@ export default defineConfig({
   build: {
     sourcemap: 'hidden',
   },
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8612',
+        changeOrigin: true,
+      },
+    },
+  },
   plugins: [
     vue(),
     UnoCSS(),
