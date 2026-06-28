@@ -1,114 +1,14 @@
-export interface Session {
-  thread_id: string;
-  appName: string;
-  userId: string;
-  values: {
-    messages?: MessageDTO[];
-  };
-}
-
-export interface UserMessage {
-  messageType: 'user';
-  content: string;
-  metadata?: Record<string, any>;
-  media?: MediaDTO[];
-}
-
-export interface AgentRunRequest {
-  appName: string;
-  userId?: string;
-  threadId: string;
-  newMessage: UserMessage;
-  streaming?: boolean;
-  stateDelta?: Record<string, any>;
-}
-
-export interface AgentResumeRequest {
-  appName: string;
-  userId?: string;
-  threadId: string;
-  toolFeedbacks?: ToolFeedbackDTO[];
-  streaming?: boolean;
-}
-
-export interface ToolFeedbackDTO {
-  id: string;
-  name: string;
-  arguments: string;
-  result?: 'APPROVED' | 'REJECTED' | 'EDITED';
-  description?: string;
-}
-
 export interface MessageDTO {
-  messageType: 'assistant' | 'user' | 'tool' | 'tool-request' | 'tool-confirm';
+  messageType: 'user' | 'assistant';
   content: string;
   metadata?: Record<string, any>;
 }
 
-export interface AssistantMessageDTO extends MessageDTO {
-  messageType: 'assistant';
-  toolCalls?: ToolCallDTO[];
-}
-
-export interface ToolCallDTO {
-  id: string;
-  type: string;
-  name: string;
-  arguments: string;
-}
-
-export interface ToolRequestMessageDTO extends MessageDTO {
-  messageType: 'tool-request';
-  toolCalls?: ToolCallDTO[];
-}
-
-export interface ToolRequestConfirmMessageDTO extends MessageDTO {
-  messageType: 'tool-confirm';
-  toolCalls?: ToolCallConfigDTO[];
-}
-
-export interface ToolCallConfigDTO {
-  id: string;
-  type: string;
-  name: string;
-  arguments: string;
-  description?: string;
-}
-
-export interface UserMessageDTO extends MessageDTO {
-  messageType: 'user';
-  media?: MediaDTO[];
-}
-
-export interface MediaDTO {
-  mimeType: string;
-  data: any;
-}
-
-export interface ToolResponseMessageDTO extends MessageDTO {
-  messageType: 'tool';
-  responses?: ToolResponseDTO[];
-}
-
-export interface ToolResponseDTO {
-  id: string;
-  name: string;
-  responseData: string;
-}
-
-export interface Usage {
-  promptTokens?: number;
-  generationTokens?: number;
-  totalTokens?: number;
-}
-
-export interface AgentRunResponse {
-  node: string;
-  eventType: 'chunk' | 'message' | 'tool_request' | 'interruption' | 'heartbeat';
-  agent: string;
-  message: MessageDTO | null;
-  tokenUsage: Usage | null;
-  chunk: string | null;
+export interface ChatRequest {
+  message: string;
+  agentName?: string;
+  threadId?: string;
+  userId?: string;
 }
 
 class ChatApiClient {
@@ -118,22 +18,25 @@ class ChatApiClient {
     this.baseUrl = baseUrl;
   }
 
-  async *runAgentStream(
-    appName: string,
-    userId: string,
+  /**
+   * Lightweight SSE endpoint: each event is plain text chunk.
+   * Uses /api/raymi/chat-stream from raymi-studio-starter.
+   */
+  async *runChatStream(
+    message: string,
+    agentName: string = 'Raymi0.1',
     threadId: string,
-    message: UserMessage,
+    userId: string,
     signal?: AbortSignal
-  ): AsyncGenerator<AgentRunResponse, void, unknown> {
-    const request: AgentRunRequest = {
-      appName,
-      userId,
+  ): AsyncGenerator<string, void, unknown> {
+    const request: ChatRequest = {
+      message,
+      agentName,
       threadId,
-      newMessage: message,
-      streaming: true,
+      userId,
     };
 
-    const response = await fetch(`${this.baseUrl}/api/studio/agent/run_sse`, {
+    const response = await fetch(`${this.baseUrl}/api/raymi/chat-stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -144,47 +47,13 @@ class ChatApiClient {
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to run agent stream: ${response.statusText}`);
+      throw new Error(`Failed to run chat stream: ${response.statusText}`);
     }
 
-    yield* this._processSSEStream(response);
+    yield* this._processPlainTextSSE(response);
   }
 
-  async *resumeAgentStream(
-    appName: string,
-    userId: string,
-    threadId: string,
-    toolFeedbacks: ToolFeedbackDTO[],
-    signal?: AbortSignal
-  ): AsyncGenerator<AgentRunResponse, void, unknown> {
-    const request: AgentResumeRequest = {
-      appName,
-      userId,
-      threadId,
-      toolFeedbacks,
-      streaming: true,
-    };
-
-    const response = await fetch(`${this.baseUrl}/api/studio/agent/resume_sse`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-      },
-      body: JSON.stringify(request),
-      signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to resume agent stream: ${response.statusText}`);
-    }
-
-    yield* this._processSSEStream(response);
-  }
-
-  private async *_processSSEStream(
-    response: Response
-  ): AsyncGenerator<AgentRunResponse, void, unknown> {
+  private async *_processPlainTextSSE(response: Response): AsyncGenerator<string, void, unknown> {
     const reader = response.body?.getReader();
     if (!reader) throw new Error('Response body is not readable');
 
@@ -201,17 +70,22 @@ class ChatApiClient {
         buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (line.trim().startsWith('data:')) {
-            const data = line.slice(5).trim();
-            if (data && data !== '{}') {
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed.error) {
-                  throw new Error(parsed.errorMessage || 'Unknown SSE Error');
+          const trimmed = line.trim();
+          if (trimmed.startsWith('data:')) {
+            const data = trimmed.slice(5).trim();
+            if (data) {
+              // Check for error JSON from SSE error frame
+              if (data.startsWith('{')) {
+                try {
+                  const parsed = JSON.parse(data);
+                  if (parsed.error) {
+                    throw new Error(parsed.message || parsed.errorMessage || 'SSE Error');
+                  }
+                } catch (e: any) {
+                  if (e.message !== 'SSE Error') throw e;
                 }
-                yield parsed as AgentRunResponse;
-              } catch (e) {
-                // skip parse error
+              } else {
+                yield data;
               }
             }
           }
@@ -223,4 +97,4 @@ class ChatApiClient {
   }
 }
 
-export const chatApi = new ChatApiClient(''); // Backend is proxied via Vite on same origin
+export const chatApi = new ChatApiClient('');
